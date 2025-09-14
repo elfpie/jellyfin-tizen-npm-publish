@@ -40,7 +40,7 @@ jobs:
           path: 'jellyfin-tizen/package.json'
           data: |
             {
-              "name": "@glenlowland/jellyfin-tizen",
+              "name": "@elfpie/jellyfin-tizen",
               "packageType": "app",
               "appName": "Jellyfin",
               "appPath": "index.html",
@@ -102,10 +102,10 @@ jobs:
           cp tizen-adapter.js jellyfin-tizen/
           cd jellyfin-tizen
           rm .gitignore
-          npm install @glenlowland/jellyfin-web
-          JELLYFIN_WEB_DIR=./node_modules/@glenlowland/jellyfin-web/dist npm ci --no-audit
+          npm install @elfpie/jellyfin-web
+          JELLYFIN_WEB_DIR=./node_modules/@elfpie/jellyfin-web/dist npm ci --no-audit
 
-      - name: Publish new @glenlowland/jellyfin-tizen package version
+      - name: Publish new @elfpie/jellyfin-tizen package version
         uses: JS-DevTools/npm-publish@v3
         with:
           token: ${{ secrets.NPM_TOKEN }}
@@ -116,7 +116,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.info.outputs.version }}
-          body: "A new version of @glenlowland/jellyfin-tizen has been published because of a new release of @glenlowland/jellyfin-web."
+          body: "A new version of @elfpie/jellyfin-tizen has been published because of a new release of @elfpie/jellyfin-web."
       
 
       
