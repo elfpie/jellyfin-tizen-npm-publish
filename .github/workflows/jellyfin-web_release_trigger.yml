@@ -1,25 +1,42 @@
-name: Release trigger
+name: Build and Publish
 
 on:
-  repository_dispatch:
-    types: [new-jellyfin-web-release]
+  schedule:
+    - cron: '0 0 * * *' # every day at midnight
   workflow_dispatch:
 
 jobs:
-  jellyfin-web_release_trigger:
+  build_and_publish:
     runs-on: ubuntu-latest
     steps:
-      - run: env
-
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Get next version
-        uses: reecetech/version-increment@2023.9.3
-        id: version
+      - name: Get latest jellyfin-web release
+        id: jellyfin_web_release
+        run: |
+          LATEST_RELEASE=$(curl -sL https://api.github.com/repos/jellyfin/jellyfin-web/releases/latest)
+          LATEST_VERSION=$(echo "$LATEST_RELEASE" | jq -r '.tag_name' | sed 's/v//')
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Clone jellyfin-web
+        uses: sudosubin/git-clone-action@v1.0.1
         with:
-          scheme: semver
-          increment: patch
+          repository: 'jellyfin/jellyfin-web'
+          platform: 'github'
+          path: 'jellyfin-web'
+          ref: 'v${{ steps.jellyfin_web_release.outputs.version }}'
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v3.0.0
+        with:
+          node-version: '>=14'
+
+      - name: Build jellyfin-web
+        run: |
+          cd jellyfin-web
+          npm install
+          npm run build
 
       - name: Clone jellyfin-tizen
         uses: sudosubin/git-clone-action@v1.0.1
@@ -27,11 +44,6 @@ jobs:
           repository: 'jellyfin/jellyfin-tizen'
           platform: 'github'
           path: 'jellyfin-tizen'
-
-      - name: Setup Node.js environment
-        uses: actions/setup-node@v3.0.0
-        with:
-          node-version: '>=14'
 
       - name: Modify jellyfin-tizen/package.json
         id: info
@@ -44,14 +56,14 @@ jobs:
               "packageType": "app",
               "appName": "Jellyfin",
               "appPath": "index.html",
-              "version": "${{ steps.version.outputs.version }}",
+              "version": "${{ steps.jellyfin_web_release.outputs.version }}",
               "keys": [
                 "MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop",
                 "MediaTrackPrevious", "MediaTrackNext", "MediaRewind", "MediaFastForward"
               ]
             }
 
-      - name: Set tize-adapter.js app version
+      - name: Set tizen-adapter.js app version
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -102,8 +114,7 @@ jobs:
           cp tizen-adapter.js jellyfin-tizen/
           cd jellyfin-tizen
           rm .gitignore
-          npm install @elfpie/jellyfin-web
-          JELLYFIN_WEB_DIR=./node_modules/@elfpie/jellyfin-web/dist npm ci --no-audit
+          JELLYFIN_WEB_DIR=../jellyfin-web/dist npm ci --no-audit
 
       - name: Publish new @elfpie/jellyfin-tizen package version
         uses: JS-DevTools/npm-publish@v3
@@ -116,7 +127,4 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.info.outputs.version }}
-          body: "A new version of @elfpie/jellyfin-tizen has been published because of a new release of @elfpie/jellyfin-web."
-      
-
-      
+          body: "A new version of @elfpie/jellyfin-tizen has been published based on jellyfin-web v${{ steps.jellyfin_web_release.outputs.version }}."
