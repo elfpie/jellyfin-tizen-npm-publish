@@ -18,6 +18,7 @@ jobs:
       - name: Get current latest release
         id: latest-release
         uses: pozetroninc/github-action-get-latest-release@master
+        continue-on-error: true
         with:
           owner: ${{ github.repository_owner }} # Uses the owner of your forked repo
           repo: ${{ github.event.repository.name }} # Uses the name of your forked repo
