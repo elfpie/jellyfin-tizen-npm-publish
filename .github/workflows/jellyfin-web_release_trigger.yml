@@ -82,11 +82,30 @@ jobs:
       # Build jellyfin-tizen
       - name: Get next version for jellyfin-tizen
         if: steps.check-update.outputs.update_needed == 'true'
-        uses: reecetech/version-increment@2023.9.3
         id: version
-        with:
-          scheme: semver
-          increment: patch
+        run: |
+          # If no previous releases, start with v1.0.0
+          if [ "${{ steps.latest-tizen-release.outputs.release }}" == "" ]; then
+            echo "version=1.0.0" >> $GITHUB_OUTPUT
+          else
+            # Extract version from the last release tag (remove jellyfin-web version suffix)
+            LAST_TAG="${{ steps.latest-tizen-release.outputs.release }}"
+            if [[ $LAST_TAG == *"-jw"* ]]; then
+              LAST_VERSION=$(echo $LAST_TAG | sed 's/-jw.*//' | sed 's/^v//')
+            else
+              LAST_VERSION=$(echo $LAST_TAG | sed 's/^v//')
+            fi
+            
+            # Increment patch version
+            IFS='.' read -r -a version_parts <<< "$LAST_VERSION"
+            MAJOR="${version_parts[0]:-1}"
+            MINOR="${version_parts[1]:-0}"
+            PATCH="${version_parts[2]:-0}"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+            
+            echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          fi
 
       - name: Clone jellyfin-tizen
         if: steps.check-update.outputs.update_needed == 'true'
