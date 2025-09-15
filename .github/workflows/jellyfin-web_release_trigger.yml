@@ -191,7 +191,7 @@ jobs:
   # JOB 4: Publish the release.
   release:
     needs: [check-for-builds, build-truehd, build-no-truehd]
-    if: success() && (needs.build-truehd.result == 'success' || needs.build-no-truehd.result == 'success')
+    if: success() && needs.build-truehd.result != 'failure' && needs.build-no-truehd.result != 'failure'
     runs-on: ubuntu-latest
     steps:
       - name: Download TrueHD artifact
