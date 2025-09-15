@@ -115,22 +115,6 @@ jobs:
               ]
             }
 
-      - name: Create tizen-adapter.js
-        if: steps.check-update.outputs.update_needed == 'true'
-        run: |
-          cat > tizen-adapter.js << 'EOF'
-          // Tizen adapter placeholder
-          // Add your tizen-adapter.js content here
-          const appVersion = {
-              version: '${{ steps.info.outputs.version }}'
-          };
-          
-          // Include the original webapis if needed
-          if (typeof window !== 'undefined' && window.webapis) {
-              // Original webapis functionality
-          }
-          EOF
-
       - name: Set tize-adapter.js app version
         if: steps.check-update.outputs.update_needed == 'true'
         uses: htsnvhoang/find-replace-multiple@master
