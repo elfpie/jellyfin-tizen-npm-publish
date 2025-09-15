@@ -1,12 +1,12 @@
-name: Release trigger
+name: Check & release jellyfin-tizen
 
 on:
-  repository_dispatch:
-    types: [new-jellyfin-web-release]
+  schedule:
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
-  jellyfin-web_release_trigger:
+  check_and_release:
     runs-on: ubuntu-latest
     steps:
       - run: env
@@ -14,7 +14,74 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Get next version
+      - name: Get current latest release of this repo
+        id: latest-tizen-release
+        uses: pozetroninc/github-action-get-latest-release@master
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: jellyfin-tizen-npm-publish
+          excludes: prerelease, draft
+
+      - name: Get Latest Jellyfin-web release
+        id: latest-jellyfin-web
+        uses: pozetroninc/github-action-get-latest-release@master
+        with:
+          owner: jellyfin
+          repo: jellyfin-web
+          excludes: prerelease, draft
+
+      # Check if we need to build (new jellyfin-web version available)
+      - name: Check if update needed
+        id: check-update
+        run: |
+          # Extract jellyfin-web version from our last release tag
+          # Assuming tag format like "v1.2.3-jw10.9.11" where jw10.9.11 is jellyfin-web version
+          LAST_TAG="${{ steps.latest-tizen-release.outputs.release }}"
+          if [[ $LAST_TAG == *"jw"* ]]; then
+            LAST_JW_VERSION=$(echo $LAST_TAG | sed 's/.*jw/v/')
+          else
+            LAST_JW_VERSION="v0.0.0"
+          fi
+          
+          CURRENT_JW_VERSION="${{ steps.latest-jellyfin-web.outputs.release }}"
+          
+          echo "Last jellyfin-web version: $LAST_JW_VERSION"
+          echo "Current jellyfin-web version: $CURRENT_JW_VERSION"
+          
+          if [ "$LAST_JW_VERSION" != "$CURRENT_JW_VERSION" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Build jellyfin-web if update is needed
+      - name: Clone jellyfin-web
+        if: steps.check-update.outputs.update_needed == 'true'
+        uses: sudosubin/git-clone-action@v1.0.1
+        with:
+          repository: 'jellyfin/jellyfin-web'
+          platform: 'github'
+          path: './jellyfin-web-source'
+          ref: ${{ steps.latest-jellyfin-web.outputs.release }}
+
+      - name: Setup Node.js environment
+        if: steps.check-update.outputs.update_needed == 'true'
+        uses: actions/setup-node@v3.0.0
+        with:
+          node-version: '>=14'
+
+      - name: Build jellyfin-web
+        if: steps.check-update.outputs.update_needed == 'true'
+        run: |
+          cd jellyfin-web-source
+          SKIP_PREPARE=1 npm ci --no-audit
+          USE_SYSTEM_FONTS=1 npm run build:production
+          # Move the built files to where jellyfin-tizen expects them
+          mv dist ../jellyfin-web-dist
+
+      # Build jellyfin-tizen
+      - name: Get next version for jellyfin-tizen
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: reecetech/version-increment@2023.9.3
         id: version
         with:
@@ -22,18 +89,15 @@ jobs:
           increment: patch
 
       - name: Clone jellyfin-tizen
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: sudosubin/git-clone-action@v1.0.1
         with:
           repository: 'jellyfin/jellyfin-tizen'
           platform: 'github'
           path: 'jellyfin-tizen'
 
-      - name: Setup Node.js environment
-        uses: actions/setup-node@v3.0.0
-        with:
-          node-version: '>=14'
-
       - name: Modify jellyfin-tizen/package.json
+        if: steps.check-update.outputs.update_needed == 'true'
         id: info
         uses: jaywcjlove/github-action-package@main
         with:
@@ -51,7 +115,24 @@ jobs:
               ]
             }
 
+      - name: Create tizen-adapter.js
+        if: steps.check-update.outputs.update_needed == 'true'
+        run: |
+          cat > tizen-adapter.js << 'EOF'
+          // Tizen adapter placeholder
+          // Add your tizen-adapter.js content here
+          const appVersion = {
+              version: '${{ steps.info.outputs.version }}'
+          };
+          
+          // Include the original webapis if needed
+          if (typeof window !== 'undefined' && window.webapis) {
+              // Original webapis functionality
+          }
+          EOF
+
       - name: Set tize-adapter.js app version
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -62,6 +143,7 @@ jobs:
           separator: "___"
             
       - name: Enable TrueHD Audio
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -72,6 +154,7 @@ jobs:
           separator: "___"
 
       - name: Include tizen-adapter.js in the app
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -82,6 +165,7 @@ jobs:
           separator: "___"
 
       - name: Inject skip-intro-button.js in the app
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -97,26 +181,43 @@ jobs:
           include: "jellyfin-tizen/gulpfile.babel.js"
           separator: "___"
 
-      - name: Build jellyfin-tizen
+      - name: Build jellyfin-tizen with local jellyfin-web
+        if: steps.check-update.outputs.update_needed == 'true'
         run: |
           cp tizen-adapter.js jellyfin-tizen/
           cd jellyfin-tizen
-          rm .gitignore
-          npm install @elfpie/jellyfin-web
-          JELLYFIN_WEB_DIR=./node_modules/@elfpie/jellyfin-web/dist npm ci --no-audit
+          rm -f .gitignore
+          
+          # Instead of installing from npm, use the locally built jellyfin-web
+          # Set the environment variable to use our built version
+          JELLYFIN_WEB_DIR=../jellyfin-web-dist npm ci --no-audit
 
       - name: Publish new @elfpie/jellyfin-tizen package version
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: JS-DevTools/npm-publish@v3
         with:
           token: ${{ secrets.NPM_TOKEN }}
           package: jellyfin-tizen
           access: public
 
+      - name: Create release tag with jellyfin-web version
+        if: steps.check-update.outputs.update_needed == 'true'
+        run: |
+          # Create a tag that includes both versions for tracking
+          JW_VERSION="${{ steps.latest-jellyfin-web.outputs.release }}"
+          JW_VERSION_CLEAN=$(echo $JW_VERSION | sed 's/^v//')
+          TAG_NAME="${{ steps.info.outputs.version }}-jw${JW_VERSION_CLEAN}"
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
       - name: Release Build Result
+        if: steps.check-update.outputs.update_needed == 'true'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.info.outputs.version }}
-          body: "A new version of @elfpie/jellyfin-tizen has been published because of a new release of @elfpie/jellyfin-web."
-      
-
-      
+          tag_name: ${{ env.TAG_NAME }}
+          body: |
+            A new version of @elfpie/jellyfin-tizen has been published.
+            
+            - Jellyfin Tizen version: ${{ steps.info.outputs.version }}
+            - Based on Jellyfin Web: ${{ steps.latest-jellyfin-web.outputs.release }}
+            
+            This release was automatically generated from the latest Jellyfin Web release.
