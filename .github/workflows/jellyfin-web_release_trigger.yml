@@ -1,27 +1,29 @@
-name: Check & release jellyfin-tizen
+name: Scheduled Jellyfin Tizen Build & Release
 
 on:
+  # Runs at 01:00 UTC every day
   schedule:
     - cron: '0 1 * * *'
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
-  check_and_release:
+  build-and-release:
     runs-on: ubuntu-latest
     steps:
-      - run: env
-
-      - name: Checkout
+      - name: Checkout repository files
         uses: actions/checkout@v3
 
-      - name: Get current latest release of this repo
-        id: latest-tizen-release
+      # STEP 1: Check for the latest release in this repository
+      - name: Get current latest release
+        id: latest-release
         uses: pozetroninc/github-action-get-latest-release@master
         with:
-          owner: ${{ github.repository_owner }}
-          repo: jellyfin-tizen-npm-publish
+          owner: ${{ github.repository_owner }} # Uses the owner of your forked repo
+          repo: ${{ github.event.repository.name }} # Uses the name of your forked repo
           excludes: prerelease, draft
 
+      # STEP 2: Check for the latest official Jellyfin-web release
       - name: Get Latest Jellyfin-web release
         id: latest-jellyfin-web
         uses: pozetroninc/github-action-get-latest-release@master
@@ -30,94 +32,40 @@ jobs:
           repo: jellyfin-web
           excludes: prerelease, draft
 
-      # Check if we need to build (new jellyfin-web version available)
-      - name: Check if update needed
-        id: check-update
-        run: |
-          # Extract jellyfin-web version from our last release tag
-          # Assuming tag format like "v1.2.3-jw10.9.11" where jw10.9.11 is jellyfin-web version
-          LAST_TAG="${{ steps.latest-tizen-release.outputs.release }}"
-          if [[ $LAST_TAG == *"jw"* ]]; then
-            LAST_JW_VERSION=$(echo $LAST_TAG | sed 's/.*jw/v/')
-          else
-            LAST_JW_VERSION="v0.0.0"
-          fi
-          
-          CURRENT_JW_VERSION="${{ steps.latest-jellyfin-web.outputs.release }}"
-          
-          echo "Last jellyfin-web version: $LAST_JW_VERSION"
-          echo "Current jellyfin-web version: $CURRENT_JW_VERSION"
-          
-          if [ "$LAST_JW_VERSION" != "$CURRENT_JW_VERSION" ]; then
-            echo "update_needed=true" >> $GITHUB_OUTPUT
-          else
-            echo "update_needed=false" >> $GITHUB_OUTPUT
-          fi
-
-      # Build jellyfin-web if update is needed
-      - name: Clone jellyfin-web
-        if: steps.check-update.outputs.update_needed == 'true'
+      # The following steps only run if a new jellyfin-web release is found
+      - name: Clone jellyfin-web source code
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: sudosubin/git-clone-action@v1.0.1
         with:
           repository: 'jellyfin/jellyfin-web'
           platform: 'github'
-          path: './jellyfin-web-source'
+          path: './jellyfin-web'
           ref: ${{ steps.latest-jellyfin-web.outputs.release }}
 
       - name: Setup Node.js environment
-        if: steps.check-update.outputs.update_needed == 'true'
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: actions/setup-node@v3.0.0
         with:
           node-version: '>=14'
 
-      - name: Build jellyfin-web
-        if: steps.check-update.outputs.update_needed == 'true'
+      - name: Build jellyfin-web from source
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         run: |
-          cd jellyfin-web-source
+          cd jellyfin-web
           SKIP_PREPARE=1 npm ci --no-audit
           USE_SYSTEM_FONTS=1 npm run build:production
-          # Move the built files to where jellyfin-tizen expects them
-          mv dist ../jellyfin-web-dist
-
-      # Build jellyfin-tizen
-      - name: Get next version for jellyfin-tizen
-        if: steps.check-update.outputs.update_needed == 'true'
-        id: version
-        run: |
-          # If no previous releases, start with v1.0.0
-          if [ "${{ steps.latest-tizen-release.outputs.release }}" == "" ]; then
-            echo "version=1.0.0" >> $GITHUB_OUTPUT
-          else
-            # Extract version from the last release tag (remove jellyfin-web version suffix)
-            LAST_TAG="${{ steps.latest-tizen-release.outputs.release }}"
-            if [[ $LAST_TAG == *"-jw"* ]]; then
-              LAST_VERSION=$(echo $LAST_TAG | sed 's/-jw.*//' | sed 's/^v//')
-            else
-              LAST_VERSION=$(echo $LAST_TAG | sed 's/^v//')
-            fi
-            
-            # Increment patch version
-            IFS='.' read -r -a version_parts <<< "$LAST_VERSION"
-            MAJOR="${version_parts[0]:-1}"
-            MINOR="${version_parts[1]:-0}"
-            PATCH="${version_parts[2]:-0}"
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
-            
-            echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Clone jellyfin-tizen
-        if: steps.check-update.outputs.update_needed == 'true'
+          
+      - name: Clone jellyfin-tizen source code
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: sudosubin/git-clone-action@v1.0.1
         with:
           repository: 'jellyfin/jellyfin-tizen'
           platform: 'github'
           path: 'jellyfin-tizen'
 
+      # All your custom modifications are applied here
       - name: Modify jellyfin-tizen/package.json
-        if: steps.check-update.outputs.update_needed == 'true'
-        id: info
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: jaywcjlove/github-action-package@main
         with:
           path: 'jellyfin-tizen/package.json'
@@ -127,26 +75,26 @@ jobs:
               "packageType": "app",
               "appName": "Jellyfin",
               "appPath": "index.html",
-              "version": "${{ steps.version.outputs.version }}",
+              "version": "${{ steps.latest-jellyfin-web.outputs.release }}",
               "keys": [
                 "MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop",
                 "MediaTrackPrevious", "MediaTrackNext", "MediaRewind", "MediaFastForward"
               ]
             }
 
-      - name: Set tize-adapter.js app version
-        if: steps.check-update.outputs.update_needed == 'true'
+      - name: Set tizen-adapter.js app version
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
             version: 'DEVELOPMENT'
           replaces: |
-            version: '${{ steps.info.outputs.version }}'
+            version: '${{ steps.latest-jellyfin-web.outputs.release }}'
           include: "tizen-adapter.js"
           separator: "___"
             
       - name: Enable TrueHD Audio
-        if: steps.check-update.outputs.update_needed == 'true'
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -157,7 +105,7 @@ jobs:
           separator: "___"
 
       - name: Include tizen-adapter.js in the app
-        if: steps.check-update.outputs.update_needed == 'true'
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -168,7 +116,7 @@ jobs:
           separator: "___"
 
       - name: Inject skip-intro-button.js in the app
-        if: steps.check-update.outputs.update_needed == 'true'
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: htsnvhoang/find-replace-multiple@master
         with:
           finds: |
@@ -184,43 +132,26 @@ jobs:
           include: "jellyfin-tizen/gulpfile.babel.js"
           separator: "___"
 
-      - name: Build jellyfin-tizen with local jellyfin-web
-        if: steps.check-update.outputs.update_needed == 'true'
+      # This is the key change: It uses the locally built jellyfin-web files
+      - name: Build jellyfin-tizen with local web files
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         run: |
           cp tizen-adapter.js jellyfin-tizen/
           cd jellyfin-tizen
-          rm -f .gitignore
-          
-          # Instead of installing from npm, use the locally built jellyfin-web
-          # Set the environment variable to use our built version
-          JELLYFIN_WEB_DIR=../jellyfin-web-dist npm ci --no-audit
+          rm .gitignore
+          JELLYFIN_WEB_DIR=../jellyfin-web/dist npm ci --no-audit
 
       - name: Publish new @elfpie/jellyfin-tizen package version
-        if: steps.check-update.outputs.update_needed == 'true'
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: JS-DevTools/npm-publish@v3
         with:
           token: ${{ secrets.NPM_TOKEN }}
-          package: jellyfin-tizen
+          package: ./jellyfin-tizen
           access: public
 
-      - name: Create release tag with jellyfin-web version
-        if: steps.check-update.outputs.update_needed == 'true'
-        run: |
-          # Create a tag that includes both versions for tracking
-          JW_VERSION="${{ steps.latest-jellyfin-web.outputs.release }}"
-          JW_VERSION_CLEAN=$(echo $JW_VERSION | sed 's/^v//')
-          TAG_NAME="${{ steps.info.outputs.version }}-jw${JW_VERSION_CLEAN}"
-          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
-
-      - name: Release Build Result
-        if: steps.check-update.outputs.update_needed == 'true'
+      - name: Release Build Result to GitHub
+        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.TAG_NAME }}
-          body: |
-            A new version of @elfpie/jellyfin-tizen has been published.
-            
-            - Jellyfin Tizen version: ${{ steps.info.outputs.version }}
-            - Based on Jellyfin Web: ${{ steps.latest-jellyfin-web.outputs.release }}
-            
-            This release was automatically generated from the latest Jellyfin Web release.
+          tag_name: ${{ steps.latest-jellyfin-web.outputs.release }}
+          body: "New build of Jellyfin for Tizen based on jellyfin-web version ${{ steps.latest-jellyfin-web.outputs.release }}."
