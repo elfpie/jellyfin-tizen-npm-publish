@@ -207,6 +207,12 @@ jobs:
         with:
           name: jellyfin-tizen-no-truehd
           path: dist/jellyfin-tizen-no-truehd
+      
+      - name: Setup Node.js for publishing
+        uses: actions/setup-node@v4
+        with:
+          node-version: '>=14'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Display structure of downloaded files
         run: ls -R dist
