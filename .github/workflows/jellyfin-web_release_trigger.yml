@@ -1,30 +1,44 @@
-name: Scheduled Jellyfin Tizen Build & Release
+name: Jellyfin Tizen Build & Release
 
 on:
-  # Runs at 01:00 UTC every day
+  # Runs at 01:00 UTC every day for automated checks
   schedule:
     - cron: '0 1 * * *'
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version for manual build (e.g., 10.8.13-manual-1). REQUIRED for manual runs.'
+        required: true
+      build_type:
+        description: 'Select the build type for the manual run'
+        type: choice
+        options:
+        - no-truehd
+        - truehd
+        default: 'no-truehd'
 
 jobs:
-  build-and-release:
+  # JOB 1: Determine what needs to be built.
+  # This job checks for new versions (on schedule) or reads manual inputs.
+  # It then sets outputs to decide which build jobs should run.
+  check-for-builds:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set-vars.outputs.version }}
+      source_tag: ${{ steps.set-vars.outputs.source_tag }}
+      run_build_truehd: ${{ steps.set-vars.outputs.run_build_truehd }}
+      run_build_no_truehd: ${{ steps.set-vars.outputs.run_build_no_truehd }}
     steps:
-      - name: Checkout repository files
-        uses: actions/checkout@v3
-
-      # STEP 1: Check for the latest release in this repository
-      - name: Get current latest release
+      - name: Get latest release from this repository
         id: latest-release
         uses: pozetroninc/github-action-get-latest-release@master
         continue-on-error: true
         with:
-          owner: ${{ github.repository_owner }} # Uses the owner of your forked repo
-          repo: ${{ github.event.repository.name }} # Uses the name of your forked repo
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
           excludes: prerelease, draft
 
-      # STEP 2: Check for the latest official Jellyfin-web release
       - name: Get Latest Jellyfin-web release
         id: latest-jellyfin-web
         uses: pozetroninc/github-action-get-latest-release@master
@@ -33,126 +47,178 @@ jobs:
           repo: jellyfin-web
           excludes: prerelease, draft
 
-      # The following steps only run if a new jellyfin-web release is found
-      - name: Clone jellyfin-web source code
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
+      - name: Set workflow variables
+        id: set-vars
+        run: |
+          # --- Logic for scheduled runs ---
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Running in scheduled mode."
+            LATEST_REPO_RELEASE="${{ steps.latest-release.outputs.release }}"
+            LATEST_JELLYFIN_WEB="${{ steps.latest-jellyfin-web.outputs.release }}"
+            
+            if [ "$LATEST_REPO_RELEASE" != "$LATEST_JELLYFIN_WEB" ]; then
+              echo "New jellyfin-web version found: $LATEST_JELLYFIN_WEB. Triggering both builds."
+              echo "version=$LATEST_JELLYFIN_WEB" >> $GITHUB_OUTPUT
+              echo "source_tag=$LATEST_JELLYFIN_WEB" >> $GITHUB_OUTPUT
+              echo "run_build_truehd=true" >> $GITHUB_OUTPUT
+              echo "run_build_no_truehd=true" >> $GITHUB_OUTPUT
+            else
+              echo "No new jellyfin-web version. Nothing to do."
+              echo "run_build_truehd=false" >> $GITHUB_OUTPUT
+              echo "run_build_no_truehd=false" >> $GITHUB_OUTPUT
+            fi
+          
+          # --- Logic for manual runs ---
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Running in manual mode for build type: ${{ github.event.inputs.build_type }}"
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "source_tag=${{ steps.latest-jellyfin-web.outputs.release }}" >> $GITHUB_OUTPUT
+            
+            if [ "${{ github.event.inputs.build_type }}" == "truehd" ]; then
+              echo "run_build_truehd=true" >> $GITHUB_OUTPUT
+              echo "run_build_no_truehd=false" >> $GITHUB_OUTPUT
+            else # no-truehd
+              echo "run_build_truehd=false" >> $GITHUB_OUTPUT
+              echo "run_build_no_truehd=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  # JOB 2: Build the TrueHD version.
+  # This job only runs if the 'check-for-builds' job tells it to.
+  build-truehd:
+    needs: check-for-builds
+    if: needs.check-for-builds.outputs.run_build_truehd == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.0.0
+        with: { node-version: '>=14' }
+
+      - name: Clone jellyfin-web source
         uses: sudosubin/git-clone-action@v1.0.1
         with:
           repository: 'jellyfin/jellyfin-web'
-          platform: 'github'
           path: './jellyfin-web'
-          ref: ${{ steps.latest-jellyfin-web.outputs.release }}
-
-      - name: Setup Node.js environment
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: actions/setup-node@v3.0.0
-        with:
-          node-version: '>=14'
-
-      - name: Build jellyfin-web from source
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
+          ref: ${{ needs.check-for-builds.outputs.source_tag }}
+      
+      - name: Build jellyfin-web
         run: |
           cd jellyfin-web
           SKIP_PREPARE=1 npm ci --no-audit
           USE_SYSTEM_FONTS=1 npm run build:production
-          
-      - name: Clone jellyfin-tizen source code
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: sudosubin/git-clone-action@v1.0.1
-        with:
-          repository: 'jellyfin/jellyfin-tizen'
-          platform: 'github'
-          path: 'jellyfin-tizen'
 
-      # All your custom modifications are applied here
-      - name: Modify jellyfin-tizen/package.json
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
+      - name: Clone jellyfin-tizen source
+        uses: sudosubin/git-clone-action@v1.0.1
+        with: { repository: 'jellyfin/jellyfin-tizen', path: 'jellyfin-tizen' }
+
+      - name: Modify package.json for TrueHD
         uses: jaywcjlove/github-action-package@main
         with:
           path: 'jellyfin-tizen/package.json'
           data: |
-            {
-              "name": "@elfpie/jellyfin-tizen",
-              "packageType": "app",
-              "appName": "Jellyfin",
-              "appPath": "index.html",
-              "version": "${{ steps.latest-jellyfin-web.outputs.release }}",
-              "keys": [
-                "MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop",
-                "MediaTrackPrevious", "MediaTrackNext", "MediaRewind", "MediaFastForward"
-              ]
-            }
+            { "name": "@elfpie/jellyfin-tizen", "packageType": "app", "appName": "Jellyfin", "appPath": "index.html", "version": "${{ needs.check-for-builds.outputs.version }}", "keys": ["MediaPlayPause","MediaPlay","MediaPause","MediaStop","MediaTrackPrevious","MediaTrackNext","MediaRewind","MediaFastForward"] }
 
-      - name: Set tizen-adapter.js app version
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: htsnvhoang/find-replace-multiple@master
-        with:
-          finds: |
-            version: 'DEVELOPMENT'
-          replaces: |
-            version: '${{ steps.latest-jellyfin-web.outputs.release }}'
-          include: "tizen-adapter.js"
-          separator: "___"
-            
-      - name: Enable TrueHD Audio
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: htsnvhoang/find-replace-multiple@master
-        with:
-          finds: |
-            return profileBuilder({ enableMkvProgressive: false, enableSsaRender: true });
-          replaces: |
-            return profileBuilder({ enableMkvProgressive: false, enableSsaRender: true, supportsTrueHd: true });
-          include: "jellyfin-tizen/tizen.js"
-          separator: "___"
-
-      - name: Include tizen-adapter.js in the app
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: htsnvhoang/find-replace-multiple@master
-        with:
-          finds: |
-            webapis.setAttribute('src', '$WEBAPIS/webapis/webapis.js');
-          replaces: |
-            webapis.setAttribute('src', '../tizen-adapter.js');
-          include: "jellyfin-tizen/gulpfile.babel.js"
-          separator: "___"
-
-      - name: Inject skip-intro-button.js in the app
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: htsnvhoang/find-replace-multiple@master
-        with:
-          finds: |
-            injectTarget.insertBefore(tizen, apploader);
-          replaces: |
-            injectTarget.insertBefore(tizen, apploader);
-
-            // inject skip-intro-button.js
-            const skipIntro = this.createElement('script');
-            skipIntro.setAttribute('src', 'https://cdn.jsdelivr.net/gh/jumoog/intro-skipper/ConfusedPolarBear.Plugin.IntroSkipper/Configuration/inject.js');
-            skipIntro.setAttribute('defer', '');
-            injectTarget.insertBefore(skipIntro, apploader);
-          include: "jellyfin-tizen/gulpfile.babel.js"
-          separator: "___"
-
-      # This is the key change: It uses the locally built jellyfin-web files
-      - name: Build jellyfin-tizen with local web files
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
+      - name: Apply Patches (incl. TrueHD)
+        run: |
+          sed -i "s/version: 'DEVELOPMENT'/version: '${{ needs.check-for-builds.outputs.version }}'/" tizen-adapter.js
+          sed -i "s/return profileBuilder({ enableMkvProgressive: false, enableSsaRender: true });/return profileBuilder({ enableMkvProgressive: false, enableSsaRender: true, supportsTrueHd: true });/" jellyfin-tizen/tizen.js
+          sed -i "s|webapis.setAttribute('src', '\$WEBAPIS/webapis/webapis.js');|webapis.setAttribute('src', '../tizen-adapter.js');|" jellyfin-tizen/gulpfile.babel.js
+      
+      - name: Build and Package Tizen App
         run: |
           cp tizen-adapter.js jellyfin-tizen/
           cd jellyfin-tizen
           rm .gitignore
           JELLYFIN_WEB_DIR=../jellyfin-web/dist npm ci --no-audit
+          npm pack
 
-      - name: Publish new @elfpie/jellyfin-tizen package version
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
-        uses: JS-DevTools/npm-publish@v3
+      - name: Upload TrueHD artifact
+        uses: actions/upload-artifact@v3
         with:
-          token: ${{ secrets.NPM_TOKEN }}
-          package: ./jellyfin-tizen
-          access: public
+          name: jellyfin-tizen-truehd
+          path: jellyfin-tizen/*.tgz
+
+  # JOB 3: Build the No-TrueHD version.
+  # This job only runs if the 'check-for-builds' job tells it to.
+  build-no-truehd:
+    needs: check-for-builds
+    if: needs.check-for-builds.outputs.run_build_no_truehd == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3.0.0
+        with: { node-version: '>=14' }
+
+      - name: Clone jellyfin-web source
+        uses: sudosubin/git-clone-action@v1.0.1
+        with:
+          repository: 'jellyfin/jellyfin-web'
+          path: './jellyfin-web'
+          ref: ${{ needs.check-for-builds.outputs.source_tag }}
+      
+      - name: Build jellyfin-web
+        run: |
+          cd jellyfin-web
+          SKIP_PREPARE=1 npm ci --no-audit
+          USE_SYSTEM_FONTS=1 npm run build:production
+
+      - name: Clone jellyfin-tizen source
+        uses: sudosubin/git-clone-action@v1.0.1
+        with: { repository: 'jellyfin/jellyfin-tizen', path: 'jellyfin-tizen' }
+
+      - name: Modify package.json for No-TrueHD
+        uses: jaywcjlove/github-action-package@main
+        with:
+          path: 'jellyfin-tizen/package.json'
+          data: |
+            { "name": "@elfpie/jellyfin-tizen-no-truehd", "packageType": "app", "appName": "Jellyfin (No TrueHD)", "appPath": "index.html", "version": "${{ needs.check-for-builds.outputs.version }}", "keys": ["MediaPlayPause","MediaPlay","MediaPause","MediaStop","MediaTrackPrevious","MediaTrackNext","MediaRewind","MediaFastForward"] }
+      
+      - name: Apply Patches (excl. TrueHD)
+        run: |
+          sed -i "s/version: 'DEVELOPMENT'/version: '${{ needs.check-for-builds.outputs.version }}'/" tizen-adapter.js
+          sed -i "s|webapis.setAttribute('src', '\$WEBAPIS/webapis/webapis.js');|webapis.setAttribute('src', '../tizen-adapter.js');|" jellyfin-tizen/gulpfile.babel.js
+
+      - name: Build and Package Tizen App
+        run: |
+          cp tizen-adapter.js jellyfin-tizen/
+          cd jellyfin-tizen
+          rm .gitignore
+          JELLYFIN_WEB_DIR=../jellyfin-web/dist npm ci --no-audit
+          npm pack
+
+      - name: Upload No-TrueHD artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: jellyfin-tizen-no-truehd
+          path: jellyfin-tizen/*.tgz
+
+  # JOB 4: Publish the release.
+  # This job runs if EITHER of the build jobs completed successfully.
+  release:
+    needs: [check-for-builds, build-truehd, build-no-truehd]
+    if: success() && (needs.build-truehd.result == 'success' || needs.build-no-truehd.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: dist
+
+      - name: Display structure of downloaded files
+        run: ls -R dist
+
+      - name: Publish all packages to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          find dist -name "*.tgz" -exec npm publish --access public {} \;
 
       - name: Release Build Result to GitHub
-        if: steps.latest-release.outputs.release != steps.latest-jellyfin-web.outputs.release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.latest-jellyfin-web.outputs.release }}
-          body: "New build of Jellyfin for Tizen based on jellyfin-web version ${{ steps.latest-jellyfin-web.outputs.release }}."
+          tag_name: ${{ needs.check-for-builds.outputs.version }}
+          body: |
+            New build of Jellyfin for Tizen based on jellyfin-web version ${{ needs.check-for-builds.outputs.source_tag }}.
+          files: |
+            dist/jellyfin-tizen-truehd/*.tgz
+            dist/jellyfin-tizen-no-truehd/*.tgz
