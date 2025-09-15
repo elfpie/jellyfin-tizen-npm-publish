@@ -20,8 +20,6 @@ on:
 
 jobs:
   # JOB 1: Determine what needs to be built.
-  # This job checks for new versions (on schedule) or reads manual inputs.
-  # It then sets outputs to decide which build jobs should run.
   check-for-builds:
     runs-on: ubuntu-latest
     outputs:
@@ -84,18 +82,17 @@ jobs:
           fi
 
   # JOB 2: Build the TrueHD version.
-  # This job only runs if the 'check-for-builds' job tells it to.
   build-truehd:
     needs: check-for-builds
     if: needs.check-for-builds.outputs.run_build_truehd == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3.0.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with: { node-version: '>=14' }
 
       - name: Clone jellyfin-web source
-        uses: sudosubin/git-clone-action@v1.0.1
+        uses: actions/checkout@v4
         with:
           repository: 'jellyfin/jellyfin-web'
           path: './jellyfin-web'
@@ -108,7 +105,7 @@ jobs:
           USE_SYSTEM_FONTS=1 npm run build:production
 
       - name: Clone jellyfin-tizen source
-        uses: sudosubin/git-clone-action@v1.0.1
+        uses: actions/checkout@v4
         with: { repository: 'jellyfin/jellyfin-tizen', path: 'jellyfin-tizen' }
 
       - name: Modify package.json for TrueHD
@@ -139,18 +136,17 @@ jobs:
           path: jellyfin-tizen/*.tgz
 
   # JOB 3: Build the No-TrueHD version.
-  # This job only runs if the 'check-for-builds' job tells it to.
   build-no-truehd:
     needs: check-for-builds
     if: needs.check-for-builds.outputs.run_build_no_truehd == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3.0.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with: { node-version: '>=14' }
 
       - name: Clone jellyfin-web source
-        uses: sudosubin/git-clone-action@v1.0.1
+        uses: actions/checkout@v4
         with:
           repository: 'jellyfin/jellyfin-web'
           path: './jellyfin-web'
@@ -163,7 +159,7 @@ jobs:
           USE_SYSTEM_FONTS=1 npm run build:production
 
       - name: Clone jellyfin-tizen source
-        uses: sudosubin/git-clone-action@v1.0.1
+        uses: actions/checkout@v4
         with: { repository: 'jellyfin/jellyfin-tizen', path: 'jellyfin-tizen' }
 
       - name: Modify package.json for No-TrueHD
@@ -193,16 +189,24 @@ jobs:
           path: jellyfin-tizen/*.tgz
 
   # JOB 4: Publish the release.
-  # This job runs if EITHER of the build jobs completed successfully.
   release:
     needs: [check-for-builds, build-truehd, build-no-truehd]
     if: success() && (needs.build-truehd.result == 'success' || needs.build-no-truehd.result == 'success')
     runs-on: ubuntu-latest
     steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v3
+      - name: Download TrueHD artifact
+        if: needs.build-truehd.result == 'success'
+        uses: actions/download-artifact@v4
         with:
-          path: dist
+          name: jellyfin-tizen-truehd
+          path: dist/jellyfin-tizen-truehd
+
+      - name: Download No-TrueHD artifact
+        if: needs.build-no-truehd.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: jellyfin-tizen-no-truehd
+          path: dist/jellyfin-tizen-no-truehd
 
       - name: Display structure of downloaded files
         run: ls -R dist
@@ -211,10 +215,14 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          find dist -name "*.tgz" -exec npm publish --access public {} \;
+          for file in dist/*/*.tgz; do
+            if [ -f "$file" ]; then
+              npm publish --access public "$file"
+            fi
+          done
 
       - name: Release Build Result to GitHub
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check-for-builds.outputs.version }}
           body: |
